@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = ROOT / "output"
 APP_TITLE = "MinerU 777 文档解析工作台"
 THEME_NAME = "flatly"
+SUPPORTED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".docx", ".pptx", ".xlsx"}
 SUPPORTED_FILETYPES = [
     ("支持的文档", "*.pdf *.png *.jpg *.jpeg *.bmp *.tif *.tiff *.docx *.pptx *.xlsx"),
     ("PDF 文件", "*.pdf"),
@@ -78,6 +79,20 @@ def build_mineru_command(input_path: Path, output_dir: Path, backend: str, metho
         "-l",
         lang,
     ]
+
+
+def collect_supported_files(folder: Path) -> list[Path]:
+    if not folder.exists() or not folder.is_dir():
+        return []
+    return sorted(path for path in folder.rglob("*") if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES)
+
+
+def summarize_input_paths(paths: list[Path]) -> str:
+    if not paths:
+        return ""
+    if len(paths) == 1:
+        return str(paths[0])
+    return f"已选择 {len(paths)} 个文件"
 
 
 def _guess_image_mime(image_path: Path) -> str:
@@ -159,6 +174,8 @@ class MinerUDesktopApp:
         self.process: subprocess.Popen[str] | None = None
         self.worker: threading.Thread | None = None
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.input_paths: list[Path] = []
+        self.stop_requested = False
 
         self.input_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(DEFAULT_OUTPUT))
@@ -199,7 +216,7 @@ class MinerUDesktopApp:
         ttk.Label(header, text="777 · MinerU 文档解析工作台", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="GPU 加速 · Markdown 输出 · 图片内嵌 · 中文界面",
+            text="GPU 加速 · 批量处理 · Markdown 输出 · 图片内嵌 · 中文界面",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Label(header, textvariable=self.status_var, style="Status.TLabel").grid(row=0, column=1, rowspan=2, sticky="e")
@@ -210,7 +227,11 @@ class MinerUDesktopApp:
 
         ttk.Label(file_card, text="输入文件").grid(row=0, column=0, sticky="w", pady=(0, 10))
         ttk.Entry(file_card, textvariable=self.input_var).grid(row=0, column=1, sticky="ew", padx=10, pady=(0, 10))
-        ttk.Button(file_card, text="选择文件", command=self._browse_input).grid(row=0, column=2, sticky="ew", pady=(0, 10))
+        input_actions = ttk.Frame(file_card)
+        input_actions.grid(row=0, column=2, sticky="ew", pady=(0, 10))
+        ttk.Button(input_actions, text="选择文件", command=self._browse_input).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(input_actions, text="批量文件", command=self._browse_inputs).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(input_actions, text="选择文件夹", command=self._browse_input_folder).grid(row=0, column=2)
 
         ttk.Label(file_card, text="输出目录").grid(row=1, column=0, sticky="w")
         ttk.Entry(file_card, textvariable=self.output_var).grid(row=1, column=1, sticky="ew", padx=10)
@@ -272,7 +293,7 @@ class MinerUDesktopApp:
             maximum=100,
             style="Accent.Horizontal.TProgressbar",
         ).grid(row=1, column=0, sticky="ew")
-        ttk.Label(progress_card, textvariable=self.progress_text_var, width=10, anchor="e").grid(
+        ttk.Label(progress_card, textvariable=self.progress_text_var, width=14, anchor="e").grid(
             row=1,
             column=1,
             padx=(10, 0),
@@ -303,7 +324,21 @@ class MinerUDesktopApp:
     def _browse_input(self) -> None:
         path = filedialog.askopenfilename(title="选择文档", filetypes=SUPPORTED_FILETYPES)
         if path:
-            self.input_var.set(path)
+            self.input_paths = [Path(path)]
+            self.input_var.set(summarize_input_paths(self.input_paths))
+
+    def _browse_inputs(self) -> None:
+        paths = filedialog.askopenfilenames(title="选择多个文档", filetypes=SUPPORTED_FILETYPES)
+        if paths:
+            self.input_paths = [Path(path) for path in paths]
+            self.input_var.set(summarize_input_paths(self.input_paths))
+
+    def _browse_input_folder(self) -> None:
+        folder = filedialog.askdirectory(title="选择批量输入文件夹")
+        if folder:
+            self.input_paths = collect_supported_files(Path(folder))
+            self.input_var.set(summarize_input_paths(self.input_paths) or "未找到支持的文件")
+            self._append_log(f"从文件夹收集到 {len(self.input_paths)} 个支持的文件。\n")
 
     def _browse_output(self) -> None:
         path = filedialog.askdirectory(title="选择输出目录", initialdir=self.output_var.get() or str(DEFAULT_OUTPUT))
@@ -314,14 +349,18 @@ class MinerUDesktopApp:
         selected = self.lang_label_var.get()
         return dict(LANGUAGES).get(selected, "ch")
 
-    def _validate(self) -> tuple[Path, Path] | None:
-        input_path = Path(self.input_var.get().strip())
+    def _validate(self) -> tuple[list[Path], Path] | None:
+        input_paths = self.input_paths
         output_dir = Path(self.output_var.get().strip())
         mineru_exe = ROOT / ".venv" / "Scripts" / "mineru.exe"
         config_path = ROOT / "mineru.json"
 
-        if not input_path.exists() or not input_path.is_file():
-            return self._validation_error("请选择一个存在的输入文件。")
+        if not input_paths and self.input_var.get().strip():
+            input_paths = [Path(self.input_var.get().strip())]
+        input_paths = [path for path in input_paths if path.exists() and path.is_file()]
+
+        if not input_paths:
+            return self._validation_error("请选择一个或多个存在的输入文件。")
         if not str(output_dir):
             return self._validation_error("请选择输出目录。")
         if not mineru_exe.exists():
@@ -329,7 +368,7 @@ class MinerUDesktopApp:
         if not config_path.exists():
             return self._validation_error(f"找不到 MinerU 配置文件: {config_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
-        return input_path, output_dir
+        return input_paths, output_dir
 
     def _validation_error(self, message: str) -> None:
         self._append_log(f"错误：{message}\n")
@@ -337,31 +376,46 @@ class MinerUDesktopApp:
         return None
 
     def start_parse(self) -> None:
-        if self.process is not None:
+        if self.worker is not None and self.worker.is_alive():
             return
 
         validated = self._validate()
         if validated is None:
             return
 
-        input_path, output_dir = validated
-        command = build_mineru_command(
-            input_path=input_path,
-            output_dir=output_dir,
-            backend=self.backend_var.get(),
-            method=self.method_var.get(),
-            lang=self._language_code(),
-        )
+        input_paths, output_dir = validated
+        self.stop_requested = False
         self.progress_var.set(0.0)
-        self.progress_text_var.set("0 / 0")
-        self._append_log("\n开始解析...\n")
-        self._append_log(" ".join(f'"{part}"' if " " in part else part for part in command) + "\n\n")
+        self.progress_text_var.set(f"0 / {len(input_paths)}")
+        self._append_log(f"\n开始解析，共 {len(input_paths)} 个文件。\n")
         self._set_running(True)
 
-        self.worker = threading.Thread(target=self._run_process, args=(command,), daemon=True)
+        args = (input_paths, output_dir, self.backend_var.get(), self.method_var.get(), self._language_code())
+        self.worker = threading.Thread(target=self._run_batch, args=args, daemon=True)
         self.worker.start()
 
-    def _run_process(self, command: list[str]) -> None:
+    def _run_batch(self, input_paths: list[Path], output_dir: Path, backend: str, method: str, lang: str) -> None:
+        total_files = len(input_paths)
+        completed = 0
+        failures = 0
+        for index, input_path in enumerate(input_paths, start=1):
+            if self.stop_requested:
+                self.log_queue.put(f"\n已停止，剩余 {total_files - completed} 个文件未处理。\n")
+                break
+            command = build_mineru_command(input_path, output_dir, backend, method, lang)
+            self.log_queue.put(f"\n[{index}/{total_files}] 开始解析：{input_path.name}\n")
+            self.log_queue.put(" ".join(f'"{part}"' if " " in part else part for part in command) + "\n")
+            exit_code = self._run_process(command, index - 1, total_files)
+            if exit_code == 0:
+                completed += 1
+                self.log_queue.put(f"[{index}/{total_files}] 完成：{input_path.name}\n")
+            else:
+                failures += 1
+                self.log_queue.put(f"[{index}/{total_files}] 失败，返回码 {exit_code}：{input_path.name}\n")
+            self.log_queue.put(f"__MINERU_FILE_DONE__{completed}|{total_files}|{failures}")
+        self.log_queue.put("__MINERU_DONE__")
+
+    def _run_process(self, command: list[str], completed_before: int, total_files: int) -> int:
         try:
             self.process = subprocess.Popen(
                 command,
@@ -376,22 +430,23 @@ class MinerUDesktopApp:
             )
             assert self.process.stdout is not None
             for line in self.process.stdout:
+                progress = extract_progress(line)
+                if progress is not None:
+                    current, total = progress
+                    self.log_queue.put(f"__MINERU_PROGRESS__{completed_before}|{total_files}|{current}|{total}")
                 self.log_queue.put(line)
-            exit_code = self.process.wait()
-            if exit_code == 0:
-                self.log_queue.put("\nMinerU 解析完成。\n")
-            else:
-                self.log_queue.put(f"\nMinerU 退出，返回码 {exit_code}。\n")
+            return self.process.wait()
         except Exception as exc:
             self.log_queue.put(f"\nERROR: {exc}\n")
+            return 1
         finally:
-            self.log_queue.put("__MINERU_DONE__")
+            self.process = None
 
     def stop_parse(self) -> None:
-        if self.process is None:
-            return
-        self._append_log("\n正在停止 MinerU...\n")
-        self.process.terminate()
+        self.stop_requested = True
+        if self.process is not None:
+            self._append_log("\n正在停止当前 MinerU 进程...\n")
+            self.process.terminate()
 
     def open_output(self) -> None:
         output_dir = Path(self.output_var.get().strip() or DEFAULT_OUTPUT)
@@ -403,6 +458,12 @@ class MinerUDesktopApp:
         self.start_button.configure(state="disabled" if running else "normal")
         self.stop_button.configure(state="normal" if running else "disabled")
 
+    def _set_batch_progress(self, completed_before: int, total_files: int, current: int, total: int) -> None:
+        page_fraction = 0.0 if total <= 0 else min(1.0, current / total)
+        percent = min(100.0, (completed_before + page_fraction) / total_files * 100.0)
+        self.progress_var.set(percent)
+        self.progress_text_var.set(f"{completed_before}/{total_files} · {current}/{total}")
+
     def _poll_logs(self) -> None:
         try:
             while True:
@@ -413,15 +474,19 @@ class MinerUDesktopApp:
                         self._append_log(f"已整理输出：保留 {len(kept)} 个 Markdown 文件。\n")
                     self.progress_var.set(100.0)
                     self.progress_text_var.set("完成")
-                    self.process = None
                     self._set_running(False)
+                elif item.startswith("__MINERU_FILE_DONE__"):
+                    completed, total, failures = [int(value) for value in item.removeprefix("__MINERU_FILE_DONE__").split("|")]
+                    self.progress_var.set(min(100.0, completed / total * 100.0))
+                    self.progress_text_var.set(f"{completed} / {total}")
+                    if failures:
+                        self.status_var.set(f"运行中 · 失败 {failures}")
+                elif item.startswith("__MINERU_PROGRESS__"):
+                    completed_before, total_files, current, total = [
+                        int(value) for value in item.removeprefix("__MINERU_PROGRESS__").split("|")
+                    ]
+                    self._set_batch_progress(completed_before, total_files, current, total)
                 else:
-                    progress = extract_progress(item)
-                    if progress is not None:
-                        current, total = progress
-                        percent = 0.0 if total <= 0 else min(100.0, current / total * 100.0)
-                        self.progress_var.set(percent)
-                        self.progress_text_var.set(f"{current} / {total}")
                     self._append_log(item)
         except queue.Empty:
             pass
@@ -443,8 +508,8 @@ def create_root() -> tk.Tk:
 def main() -> None:
     root = create_root()
     root.title(APP_TITLE)
-    root.geometry("1080x720")
-    root.minsize(900, 620)
+    root.geometry("1180x740")
+    root.minsize(980, 640)
     MinerUDesktopApp(root)
     root.mainloop()
 

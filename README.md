@@ -11,6 +11,7 @@ This is a Windows desktop UI overlay for an existing MinerU installation. It add
 - 中文桌面窗口，标题为 `777 · MinerU 文档解析工作台`
 - 基于 `ttkbootstrap` 的主题化 Tkinter UI
 - 输入/输出目录选择
+- 支持单文件、多文件和文件夹批量处理
 - 语言、模式和后端选择
 - GPU 环境变量启动
 - 解析完成后只保留 Markdown 文件
@@ -21,6 +22,7 @@ This is a Windows desktop UI overlay for an existing MinerU installation. It add
 - Chinese desktop window with a personalized `777` title
 - Theme-based Tkinter UI via `ttkbootstrap`
 - Input/output selectors
+- Single-file, multi-file, and folder batch processing
 - Language, mode, and backend selectors
 - GPU-oriented environment setup
 - Keep Markdown only after parsing
@@ -69,6 +71,24 @@ Then edit `mineru.json` and point `models-dir.pipeline` to your local model fold
 ```text
 start_desktop_ui.bat
 ```
+
+## 批量处理 / Batch Processing
+
+界面提供三种输入方式：
+
+- `选择文件`：处理单个文档
+- `批量文件`：一次选择多个文档
+- `选择文件夹`：递归收集文件夹中的支持格式文件
+
+The UI provides three input modes:
+
+- `选择文件`: process one document
+- `批量文件`: select multiple documents at once
+- `选择文件夹`: recursively collect supported files from a folder
+
+批量处理会按顺序逐个调用 MinerU。总进度条会综合显示当前文件进度和整体文件数量进度。
+
+Batch processing runs MinerU sequentially for each file. The global progress bar combines the current file progress with the total file count.
 
 Double-click:
 

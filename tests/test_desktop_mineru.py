@@ -32,6 +32,31 @@ def test_normalize_markdown_encoding_adds_bom_without_changing_text(tmp_path: Pa
     assert md_path.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
+def test_collect_supported_files_recursively(tmp_path: Path):
+    folder = tmp_path / "batch"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    pdf_path = folder / "a.pdf"
+    image_path = nested / "b.png"
+    ignored_path = nested / "notes.txt"
+    pdf_path.write_bytes(b"%PDF")
+    image_path.write_bytes(b"png")
+    ignored_path.write_text("ignore", encoding="utf-8")
+
+    paths = desktop_mineru.collect_supported_files(folder)
+
+    assert paths == [pdf_path, image_path]
+
+
+def test_summarize_input_paths_for_single_and_batch(tmp_path: Path):
+    first = tmp_path / "a.pdf"
+    second = tmp_path / "b.pdf"
+
+    assert desktop_mineru.summarize_input_paths([]) == ""
+    assert desktop_mineru.summarize_input_paths([first]) == str(first)
+    assert desktop_mineru.summarize_input_paths([first, second]) == "已选择 2 个文件"
+
+
 def test_keep_only_markdown_outputs_removes_extra_files_and_empty_dirs(tmp_path: Path):
     output_dir = tmp_path / "output"
     txt_dir = output_dir / "doc" / "txt"
