@@ -65,9 +65,11 @@ def build_mineru_env() -> dict[str, str]:
 
 
 def build_mineru_command(input_path: Path, output_dir: Path, backend: str, method: str, lang: str) -> list[str]:
-    mineru_exe = ROOT / ".venv" / "Scripts" / "mineru.exe"
+    python_exe = ROOT / ".venv" / "Scripts" / "python.exe"
     return [
-        str(mineru_exe),
+        str(python_exe),
+        "-m",
+        "mineru.cli.client",
         "-p",
         str(input_path),
         "-o",
@@ -94,6 +96,33 @@ def summarize_input_paths(paths: list[Path]) -> str:
         return str(paths[0])
     return f"已选择 {len(paths)} 个文件"
 
+
+
+def expected_output_roots(input_paths: list[Path], output_dir: Path) -> list[Path]:
+    return [output_dir / input_path.stem for input_path in input_paths]
+
+
+def keep_current_task_markdown_outputs(input_paths: list[Path], output_dir: Path) -> list[Path]:
+    kept: list[Path] = []
+    for task_output_root in expected_output_roots(input_paths, output_dir):
+        kept.extend(keep_only_markdown_outputs(task_output_root))
+    return kept
+
+
+def snapshot_markdown_outputs(output_dir: Path) -> dict[Path, int]:
+    if not output_dir.exists():
+        return {}
+    return {path: path.stat().st_mtime_ns for path in output_dir.rglob("*.md") if path.is_file()}
+
+
+def keep_changed_markdown_outputs(output_dir: Path, before: dict[Path, int]) -> list[Path]:
+    changed: list[Path] = []
+    for md_path in output_dir.rglob("*.md") if output_dir.exists() else []:
+        if md_path.is_file() and before.get(md_path) != md_path.stat().st_mtime_ns:
+            embed_images_as_data_uris(md_path)
+            normalize_markdown_encoding(md_path)
+            changed.append(md_path)
+    return changed
 
 def _guess_image_mime(image_path: Path) -> str:
     suffix = image_path.suffix.lower()
@@ -175,6 +204,9 @@ class MinerUDesktopApp:
         self.worker: threading.Thread | None = None
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.input_paths: list[Path] = []
+        self.current_task_input_paths: list[Path] = []
+        self.current_task_output_dir: Path | None = None
+        self.markdown_snapshot: dict[Path, int] = {}
         self.stop_requested = False
 
         self.input_var = tk.StringVar()
@@ -352,7 +384,7 @@ class MinerUDesktopApp:
     def _validate(self) -> tuple[list[Path], Path] | None:
         input_paths = self.input_paths
         output_dir = Path(self.output_var.get().strip())
-        mineru_exe = ROOT / ".venv" / "Scripts" / "mineru.exe"
+        python_exe = ROOT / ".venv" / "Scripts" / "python.exe"
         config_path = ROOT / "mineru.json"
 
         if not input_paths and self.input_var.get().strip():
@@ -363,8 +395,8 @@ class MinerUDesktopApp:
             return self._validation_error("请选择一个或多个存在的输入文件。")
         if not str(output_dir):
             return self._validation_error("请选择输出目录。")
-        if not mineru_exe.exists():
-            return self._validation_error(f"找不到 MinerU 可执行文件: {mineru_exe}")
+        if not python_exe.exists():
+            return self._validation_error(f"??? Python ????: {python_exe}")
         if not config_path.exists():
             return self._validation_error(f"找不到 MinerU 配置文件: {config_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -384,6 +416,9 @@ class MinerUDesktopApp:
             return
 
         input_paths, output_dir = validated
+        self.current_task_input_paths = input_paths
+        self.current_task_output_dir = output_dir
+        self.markdown_snapshot = snapshot_markdown_outputs(output_dir)
         self.stop_requested = False
         self.progress_var.set(0.0)
         self.progress_text_var.set(f"0 / {len(input_paths)}")
@@ -469,9 +504,9 @@ class MinerUDesktopApp:
             while True:
                 item = self.log_queue.get_nowait()
                 if item == "__MINERU_DONE__":
-                    if self.output_var.get().strip():
-                        kept = keep_only_markdown_outputs(Path(self.output_var.get().strip()))
-                        self._append_log(f"已整理输出：保留 {len(kept)} 个 Markdown 文件。\n")
+                    if self.current_task_output_dir is not None:
+                        kept = keep_changed_markdown_outputs(self.current_task_output_dir, self.markdown_snapshot)
+                        self._append_log(f"Current task output cleaned: kept {len(kept)} Markdown file(s).\n")
                     self.progress_var.set(100.0)
                     self.progress_text_var.set("完成")
                     self._set_running(False)
