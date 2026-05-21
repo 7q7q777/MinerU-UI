@@ -35,6 +35,7 @@ This is a Windows desktop UI overlay for an existing MinerU installation. It add
 ```text
 desktop_mineru.py
 start_desktop_ui.bat
+MinerU文档解析工作台v2.0 -777.bat
 start_desktop_ui.ps1
 requirements-ui.txt
 mineru.template.json
@@ -69,7 +70,7 @@ Then edit `mineru.json` and point `models-dir.pipeline` to your local model fold
 双击运行：
 
 ```text
-start_desktop_ui.bat
+MinerU文档解析工作台v2.0 -777.bat
 ```
 
 ## 批量处理 / Batch Processing
@@ -93,7 +94,7 @@ Batch processing runs MinerU sequentially for each file. The global progress bar
 Double-click:
 
 ```text
-start_desktop_ui.bat
+MinerU文档解析工作台v2.0 -777.bat
 ```
 
 ## 模型来源 / Model Sources
